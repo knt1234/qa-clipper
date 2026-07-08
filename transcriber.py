@@ -2,28 +2,27 @@ import json
 from pathlib import Path
 from typing import List
 
-import whisper
+from faster_whisper import WhisperModel
 
 
 def transcribe(audio_path: str, model_name: str = "large-v3") -> List[dict]:
     """Transcribe audio with word-level timestamps.
     Returns list of {word, start, end}.
     """
-    model = whisper.load_model(model_name)
-    result = model.transcribe(
+    model = WhisperModel(model_name, device="cpu", compute_type="int8")
+    segments, _info = model.transcribe(
         audio_path,
         language="ja",
         word_timestamps=True,
-        verbose=False,
     )
 
     words = []
-    for segment in result["segments"]:
-        for w in segment.get("words", []):
+    for segment in segments:
+        for w in segment.words or []:
             words.append({
-                "word": w["word"].strip(),
-                "start": round(w["start"], 3),
-                "end": round(w["end"], 3),
+                "word": w.word.strip(),
+                "start": round(w.start, 3),
+                "end": round(w.end, 3),
             })
 
     return words

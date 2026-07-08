@@ -5,6 +5,7 @@
 output*/
 *.wav
 *.mp4
+*.log
 
 # Python
 __pycache__/

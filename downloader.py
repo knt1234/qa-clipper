@@ -1,7 +1,17 @@
+import shutil
 import subprocess
 import os
+import sys
 from pathlib import Path
 from typing import Optional, Tuple
+
+YTDLP = shutil.which("yt-dlp")
+FFMPEG = shutil.which("ffmpeg")
+
+if not YTDLP:
+    sys.exit("エラー: yt-dlp が見つかりません。`pip3 install yt-dlp` を実行してください")
+if not FFMPEG:
+    sys.exit("エラー: ffmpeg が見つかりません。`brew install ffmpeg` を実行してください")
 
 
 def download_video(url: str, output_dir: str, cookies_from_browser: Optional[str] = None) -> Tuple[str, str]:
@@ -13,7 +23,7 @@ def download_video(url: str, output_dir: str, cookies_from_browser: Optional[str
 
     video_template = str(output_dir / "%(title)s.%(ext)s")
     cmd = [
-        "/opt/homebrew/bin/yt-dlp",
+        YTDLP,
         "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
         "-o", video_template,
@@ -41,7 +51,7 @@ def download_video(url: str, output_dir: str, cookies_from_browser: Optional[str
     audio_path = str(Path(video_path).with_suffix(".wav"))
     subprocess.run(
         [
-            "ffmpeg", "-y",
+            FFMPEG, "-y",
             "-i", video_path,
             "-ar", "16000",
             "-ac", "1",
