@@ -1,6 +1,6 @@
 ---
 name: qa-clipper
-description: YouTubeまたはローカルの動画から質疑応答（Q&A）を自動検出し、1問1答形式の切り抜きMP4を生成するスキル。Whisper（ローカル無料）で文字起こし、Claude Haiku APIでQ&A境界を検出、ffmpegで切り出す。
+description: YouTubeまたはローカルの動画から質疑応答（Q&A）を自動検出し、1問1答形式の切り抜きMP4を生成するスキル。faster-whisper（ローカル無料）で文字起こし、Claude Haiku APIでQ&A境界を検出、ffmpegで切り出す。
 ---
 
 # Q&Aクリッパー
@@ -9,16 +9,49 @@ description: YouTubeまたはローカルの動画から質疑応答（Q&A）を
 
 質問会・勉強会・インタビュー動画から、1問1答形式の切り抜き動画を自動生成する。
 
-- **文字起こし**: Whisper large-v3（ローカル・無料）
+- **文字起こし**: faster-whisper large-v3（ローカル・無料・openai-whisper比3〜8倍高速）
 - **Q&A検出**: Claude Haiku API（10分動画で約13〜26円）
-- **動画編集**: ffmpeg
-- **前後の余白**: 3秒（YouTube Studioでトリミング調整を前提）
+- **動画編集**: ffmpeg（再エンコード方式で正確に切り出し）
+- **余白**: なし（質問の話し始め〜回答の話し終わりでぴったり切る）
+
+## 実行フロー（Claude Code経由で実行する場合は必ずこの順で進める）
+
+1. **解析**: 文字起こし → Claude解析 → 3段階の終端自動補正（`validate_qa_pairs`→`snap_answer_endings`→`refine_endings_by_silence`。経緯は[references/lessons.md](references/lessons.md)）→ `qa_list.md`（Q&A一覧）を生成
+2. **事前チェック**: `detect_question_markers`／`cross_check_qa_pairs` でAI検出結果とルールベースの定型句検出を突き合わせる。警告（検出漏れ／結合の疑い）が出たら**切り出しに進まない**。`analysis.json` を修正するか再解析し、警告ゼロを確認する（CLI単体実行では`--force`で無視も可・非推奨）
+3. **事前レビュー**: `qa_list.md` の内容（タイトル・時間・質問の冒頭、警告があれば⚠️セクションも）をチャットでユーザーに提示し、確認を取る
+4. **切り出し**: ユーザーOKが出たら再エンコード方式で切り出しを実行する
+5. **事後検証**: `verify_clips` を実行し `qa_report.md` を生成する（詳細は下記「事後検証」参照）
+6. **事後レビュー**: `qa_report.md` の表を提示し、**最終OKをもらって初めて完成**。⚠️があれば原因を修正して4に戻る
+7. **ふりかえり記録**: 完了報告の前にセッションの指摘・確認事項を整理し記録する。手順とテンプレートは [references/lessons.md](references/lessons.md) 冒頭の「このファイルの書き方」を参照。SKILL.mdに仕様を追加した場合は `verify_clips` の仕様準拠チェック項目も必ずセットで追加する
+8. **最終配置（承認後）**: 完成承認後、`finalize.py` でローカル完成品配置＋GDriveバックアップ＋作業フォルダ削除を行う（下記「最終配置とバックアップ」参照）。実行前にファイル操作の内容を提示し、**⑥とは別にもう一段の承認を得る**（無断でファイルを動かさない）
+
+`--review` フラグで切り出し前に一時停止してqa_list.mdを確認できる（単体実行時向け）。Claude Code経由ではフラグの有無に関わらず上記を人間の確認込みで進める。
+
+## 事後検証（qa_report.md、詳細は [references/troubleshooting.md](references/troubleshooting.md)）
+
+`verify_clips`（editor.py）が4系統（A.ファイル健全性 / B.境界検査 / C.カバレッジ検査 / D.仕様準拠チェック）を検証し「✅ 合格」または「⚠️ 要確認N件」を出す。Cは参考情報で合否に含めない。⚠️は自動失格ではなく確認のトリガー。**Dが照合する約束事項は下記「注意事項」の記述そのもの。注意事項を変更したら `verify_clips` 内 `compliance_rows` も同時に更新すること。**
+
+## 最終配置とバックアップ
+
+完成物だけをローカルに残し、それ以外（audio.wav・JSON・レポート含む一式）はGoogle Driveにバックアップする運用（動画編集プロジェクト共通）。
+
+| 種別 | パス | 内容 |
+|---|---|---|
+| ローカル完成品 | `/Users/Kenta/Documents/動画編集_完成品/QA_{動画名}/` | クリップMP4のみ |
+| GDriveバックアップ | `.../動画編集_中間ファイル/qa_{動画名}/` | output フォルダ一式（クリップ+音声+JSON+レポート） |
+| 作業フォルダ | `output_{動画名}_{日付}/` | 検証通過後に削除 |
+
+```bash
+python3 finalize.py --output "output_xxx_20260707"
+```
+
+安全順序（コピー→検証→削除）を厳守し、`qa_report.md` が「✅ 合格」でないと実行しない。`--keep-local`（削除スキップ）、`--yes`（確認省略）、`--force`（⚠️があっても続行。**ユーザー承認必須**、無条件バイパスにしない）。GDrive未マウント時は中止する。
 
 ## セットアップ（初回のみ）
 
 ```bash
 # 依存ライブラリ
-pip3 install openai-whisper anthropic ffmpeg-python torch tqdm yt-dlp
+pip3 install faster-whisper anthropic ffmpeg-python tqdm yt-dlp
 
 # ffmpeg / yt-dlp
 brew install ffmpeg
@@ -29,70 +62,69 @@ echo 'export ANTHROPIC_API_KEY="sk-ant-..."' >> ~/.zshenv
 
 ## 使い方
 
-### YouTube URLから処理
-
 ```bash
 cd "/Users/Kenta/Claude Code/video_editor"
-python3 main.py "https://youtu.be/XXXX" --mode qa --output ./output
-```
 
-### ローカルファイルから処理
+# ローカルファイルから処理（主な用途）。--output省略時は output_{動画名}_{日付} が自動生成される
+python3 main.py --skip-dl --video "/path/to/video.mp4" --mode qa --review
 
-```bash
-python3 main.py \
-  --skip-dl \
-  --video "/path/to/video.mp4" \
-  --mode qa \
-  --output ./output
-```
+# YouTube URLから処理
+python3 main.py "https://youtu.be/XXXX" --mode qa --review
 
-### 限定公開動画（Chromeのログインを使用）
-
-```bash
+# 限定公開動画（Chromeのログインを使用）
 python3 main.py "https://youtu.be/XXXX" --mode qa --cookies-from-browser chrome
-```
 
-### 文字起こし・解析を再利用（2回目以降は高速）
-
-```bash
-python3 main.py \
-  --skip-dl \
-  --video "/path/to/video.mp4" \
-  --transcript ./output/transcript.json \
-  --analysis ./output/analysis.json \
-  --mode qa
+# 文字起こし・解析を再利用（2回目以降は高速）
+python3 main.py --skip-dl --video "/path/to/video.mp4" \
+  --transcript ./output_xxx/transcript.json --analysis ./output_xxx/analysis.json --mode qa
 ```
 
 ## 出力ファイル
 
-```
-output/
-├── transcript.json        ← 文字起こし（再利用可）
-├── analysis.json          ← Q&A検出結果（再利用可）
-└── qa/
-    ├── 001_タイトル.mp4
-    ├── 002_タイトル.mp4
-    └── ...
-```
+`finalize.py` 実行前は作業フォルダ `output_{動画名}_{日付}/` に `transcript.json`（文字起こし）・`analysis.json`（Q&A検出結果）・`qa_list.md`（事前レビュー用一覧）・`qa_report.md`（事後検証レポート）・`qa/001_タイトル.mp4...`（クリップ）が揃う。
+
+`finalize.py` 実行後（承認後）は `Documents/動画編集_完成品/QA_{動画名}/` にクリップのみ、`GDrive/動画編集_中間ファイル/qa_{動画名}/` に上記一式のバックアップが残り、作業フォルダは削除される（詳細は「最終配置とバックアップ」参照）。
+
+## 完了時チェックリスト
+
+- [ ] `qa_report.md` の総合判定を確認し、表をそのままユーザーに提示する。⚠️は原因を切り分け、実際の問題なら修正して再切り出し・再検証する
+- [ ] ユーザーから最終OKをもらって初めて完成とする（生成できた時点では完成ではない）
+- [ ] 完了報告の前にセッションの指摘事項を整理・記録する（実行フロー⑦参照）
 
 ## 注意事項
 
-- クリップは**前後3秒の余白付き**で生成される
-- 短すぎる場合は修正不可のため、長めに設定している
-- 長い分はYouTube Studioのトリミング・カット機能で調整する
-- Whisper large-v3のダウンロードは初回のみ（約3GB）
-- 10分動画の処理時間の目安：文字起こし10〜20分 + Claude解析1分以内
+- クリップは**再エンコード方式**で切り出す（`-c copy` は使わない）。キーフレーム単位のズレを避けるため、多少処理時間はかかるが位置が正確になる
+- 余白なしで、質問の話し始め〜回答の話し終わりちょうどで切り出す
+- `--mode qa` ではフィラー検出は行わない（プロンプト・出力トークンの無駄を避けるため）
+- Q&Aペアは自動検証される（順序整列・時間超過のクランプ・重複除外）。除外されたペアは実行ログに警告が出る
+- Whisper large-v3モデルのダウンロードは初回のみ（約3GB）
+- 15分動画の処理時間の実測目安：文字起こし約5分 + Claude解析1分以内 + 切り出し（5クリップ）約3分
+
+## トラブルシューティング（詳細は [references/troubleshooting.md](references/troubleshooting.md)）
+
+| 症状 | 原因 | 対処 |
+|---|---|---|
+| 語尾が切れる | Whisperの時刻は実際の発声より早く出る | `refine_endings_by_silence` が自動補正。手動確認は波形で（troubleshooting.md） |
+| 無音検出が反応しない | 音源の音量が小さい | 閾値は `mean_volume - 6dB` を自動算出（実装済み） |
+| 回答が相槌の手前で切れる | Claudeが相槌を回答終了と誤認 | `snap_answer_endings` がギャップ0.8秒未満なら延長 |
+| クリップ頭がズレる／冒頭が乱れる | `-c copy` はキーフレーム単位でしか切れない | 再エンコード方式（実装済み）。`-c copy` に戻さない |
+| 複数の質問が1クリップに結合される | AIが前振りを見逃す | `cross_check_qa_pairs` が警告。`analysis.json` を分割して再実行 |
+| ドキュメントと挙動がズレる | 仕様変更時に片方だけ直す | `qa_report.md` の仕様準拠チェックが検出。両方同時に更新する |
+| qa_report.mdの境界検査が誤検知する | tinyモデルの精度が粗い | 切り分け方はtroubleshooting.md参照 |
+| 承認済みの警告で finalize.py がブロックされる | ⚠️が残っていると実行不可の仕様 | ユーザー承認を得た上で `finalize.py --force` |
 
 ## オプション一覧
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
 | `--mode` | `both` | `filler` / `qa` / `both` |
-| `--output` | `./output` | 出力フォルダ |
+| `--output` | `./output_{動画名}_{日付}` | 出力フォルダ |
 | `--model` | `large-v3` | Whisperモデル名 |
 | `--ai-model` | `claude-haiku-4-5-20251001` | Claude AIモデル |
 | `--skip-dl` | - | ダウンロードをスキップ |
 | `--video` | - | ローカル動画パス |
 | `--transcript` | - | 既存の文字起こしJSONを再利用 |
 | `--analysis` | - | 既存の解析JSONを再利用 |
+| `--review` | - | 切り出し前にqa_list.mdで一時停止して確認 |
+| `--force` | - | 質問マーカーのクロスチェックで警告が出ても切り出しを続行する（非推奨） |
 | `--cookies-from-browser` | - | 限定公開動画用（chrome/firefox/safari） |
