@@ -226,7 +226,7 @@ def _transcribe_window(clip_path: str, start: float, duration: Optional[float]) 
             cmd += ["-t", str(duration)]
         cmd += ["-i", clip_path, "-vn", "-ar", "16000", "-ac", "1", tmp_path]
         subprocess.run(cmd, capture_output=True, text=True)
-        words = transcribe(tmp_path, model_name="tiny")
+        words = transcribe(tmp_path, model_name="tiny", vad_filter=False)
         return "".join(w["word"] for w in words)
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -290,7 +290,7 @@ def _coverage_gaps(qa_pairs: List[dict], words: List[dict], duration: float) -> 
 
 def verify_clips(video_path: str, clip_paths: List[str], qa_pairs: List[dict],
                   words: List[dict], output_dir: str,
-                  analysis: Optional[dict] = None) -> Path:
+                  analysis: Optional[dict] = None, mode: str = "qa") -> Path:
     """生成済みクリップを多面的に検証し、qa_report.md を生成する。
 
     A. ファイル健全性（存在・ストリーム・長さ・末尾フレーム）
@@ -300,6 +300,10 @@ def verify_clips(video_path: str, clip_paths: List[str], qa_pairs: List[dict],
 
     analysis（analysis.jsonの生データ）を渡すと、終端3段補正の適用有無と
     フィラー検出の有無も照合できる。
+
+    mode: Bの質問マーカー判定は「◯つ目の質問」等の定型句前提のため qa/both 専用。
+    group-consult / whole では冒頭・末尾テキストをレポートに表示するだけに留め、
+    ⚠️（合否）には反映しない（指名パターンや通常の会話には質問マーカーが出ないため）。
     """
     from analyzer import STRONG_MARKER_PATTERN, WEAK_MARKER_PATTERN
 
@@ -344,11 +348,12 @@ def verify_clips(video_path: str, clip_paths: List[str], qa_pairs: List[dict],
             tail_start = max(0.0, actual_dur - HEAD_TAIL_WINDOW)
             tail_text = _transcribe_window(clip_path, tail_start, None)
 
-            if STRONG_MARKER_PATTERN.search(tail_text):
-                issues.append("末尾に次の質問マーカー検出(混入の疑い)")
-                tail_has_next_marker_any = True
-            if not (STRONG_MARKER_PATTERN.search(head_text) or WEAK_MARKER_PATTERN.search(head_text)):
-                issues.append("冒頭に質問マーカーが見当たらない(要目視確認)")
+            if mode in ("qa", "both"):
+                if STRONG_MARKER_PATTERN.search(tail_text):
+                    issues.append("末尾に次の質問マーカー検出(混入の疑い)")
+                    tail_has_next_marker_any = True
+                if not (STRONG_MARKER_PATTERN.search(head_text) or WEAK_MARKER_PATTERN.search(head_text)):
+                    issues.append("冒頭に質問マーカーが見当たらない(要目視確認)")
 
         verdict = "✅" if not issues else "⚠️ " + " / ".join(issues)
         if issues:

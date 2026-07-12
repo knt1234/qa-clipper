@@ -27,6 +27,46 @@ QA_SECTION = """\
 
 """
 
+GROUP_CONSULT_SECTION = """\
+{n}. **Q&Aセッション検出（グループコンサル形式）**
+   この動画は、講師が受講生を1人ずつ指名し、指名された受講生が近況報告や質問を話し、
+   その後講師と受講生が複数回やりとりしながら1つのセッションが進む、という形式です。
+   一問一答ではなく、1人の受講生につき数分間の対話が続くことを前提に検出してください。
+
+   **重要: 音声全体には通常2人以上の受講生への指名が含まれています。**
+   最初の1人（または最初のセッション）を見つけて満足せず、音声の最後まで指名を
+   探し続けてください。1件しか見つからない場合はほぼ確実に見落としです。
+
+   指名の発言パターンの例（これらに類する「人名+さん」を伴う発言はすべて、
+   新しいセッションの開始トリガーの候補として扱ってください）：
+   - 「〇〇さんから順番に行きましょうか」「〇〇さんいきましょうか」
+   - 「次は〇〇さん」「続いて〇〇さん」「〇〇さんお願いします」
+   - 「〇〇さんはどうですか」「〇〇さんの方から」
+   文字起こし中に人名+「さん」を含む発言が出てきたら、その直前までの内容が
+   1つのセッションとして終わっていないか、必ず立ち止まって確認してください。
+
+   以下のルールを厳守してください：
+   - q_start は、講師が次の受講生を指名した発言の開始タイムスタンプにすること。
+     指名がない最初のセッション（冒頭の案内等）は音声の先頭から
+   - a_end は【次の受講生が指名される直前】のタイムスタンプにすること（最後のセッションは音声の終わり）
+   - 1つのセッションの中で講師と受講生が何度やりとりしても、次の指名が明確に検出できるまでは
+     同じセッションとして扱うこと。「ありがとうございます」「なるほど」「はい」のような相槌や
+     話題の小さな区切りだけで新しいセッションを開始してはならない
+   - 新しい名前が呼ばれた、または明確に次の受講生に話者交代したと判断できる場合のみ、
+     そこで新しいペアを開始すること
+   - 各ペアには、指名された受講生名または相談内容が分かる短い日本語タイトル（10文字以内）を
+     付けてください
+
+"""
+
+WHOLE_TITLE_SECTION = """\
+{n}. **タイトル生成**
+   この音声全体は、講師と受講生1人との1つの相談セッションです。区切りの検出は不要です。
+   内容を要約した短い日本語タイトル（10文字以内、受講生名が分かる場合は名前を含める）を
+   1つだけ考えてください。
+
+"""
+
 JSON_FORMAT_FILLER = """\
   "fillers": [
     {"start": 12.3, "end": 12.8, "text": "えー"}
@@ -37,6 +77,10 @@ JSON_FORMAT_QA = """\
   "qa_pairs": [
     {"q_start": 30.0, "a_end": 95.2, "title": "自己紹介について"}
   ]
+"""
+
+JSON_FORMAT_TITLE = """\
+  "title": "北島さん"
 """
 
 
@@ -51,6 +95,12 @@ def _build_system_prompt(mode: str) -> str:
     if mode in ("qa", "both"):
         sections.append(QA_SECTION.format(n=n))
         json_fields.append(JSON_FORMAT_QA)
+    if mode == "group-consult":
+        sections.append(GROUP_CONSULT_SECTION.format(n=n))
+        json_fields.append(JSON_FORMAT_QA)
+    if mode == "whole":
+        sections.append(WHOLE_TITLE_SECTION.format(n=n))
+        json_fields.append(JSON_FORMAT_TITLE)
 
     json_fields_str = ",\n".join(f.rstrip(",\n") for f in json_fields)
     return f"""\
@@ -211,13 +261,16 @@ def cross_check_qa_pairs(qa_pairs: List[dict], markers: List[dict]) -> List[str]
 def analyze(words: List[dict], model: str = "claude-haiku-4-5-20251001",
             mode: str = "both") -> dict:
     """Analyze transcript with Claude API.
-    mode: "filler" / "qa" / "both" — 不要な解析はプロンプトから除外し、
-    トークン消費と出力打ち切りのリスクを減らす。
-    Returns {"fillers": [...], "qa_pairs": [...]}.
+    mode: "filler" / "qa" / "both" / "group-consult" / "whole" — 不要な解析はプロンプトから
+    除外し、トークン消費と出力打ち切りのリスクを減らす。
+    "whole"は区切り検出をせず、音声全体のタイトルだけを生成する。
+    Returns {"fillers": [...], "qa_pairs": [...], "title": ...}.
     """
     client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     system_prompt = _build_system_prompt(mode)
-    transcript_text = json.dumps(words, ensure_ascii=False)
+    # whole はタイトル生成だけなので全文は不要。冒頭300語で十分（トークン節約）。
+    words_to_send = words[:300] if mode == "whole" else words
+    transcript_text = json.dumps(words_to_send, ensure_ascii=False)
 
     raw = None
     last_error = None
@@ -242,6 +295,7 @@ def analyze(words: List[dict], model: str = "claude-haiku-4-5-20251001",
             result = json.loads(raw)
             result.setdefault("fillers", [])
             result.setdefault("qa_pairs", [])
+            result.setdefault("title", "セッション")
             return result
         except json.JSONDecodeError as e:
             last_error = e

@@ -9,7 +9,7 @@ description: YouTubeまたはローカルの動画から質疑応答（Q&A）を
 
 質問会・勉強会・インタビュー動画から、1問1答形式の切り抜き動画を自動生成する。
 
-- **文字起こし**: faster-whisper large-v3（ローカル・無料・openai-whisper比3〜8倍高速）
+- **文字起こし**: faster-whisper large-v3-turbo（ローカル・無料。CTranslate2はMacでGPU非対応のためCPU実行。turbo+vad_filter+全コア使用で実測は動画の長さの約1.05倍）
 - **Q&A検出**: Claude Haiku API（10分動画で約13〜26円）
 - **動画編集**: ffmpeg（再エンコード方式で正確に切り出し）
 - **余白**: なし（質問の話し始め〜回答の話し終わりでぴったり切る）
@@ -77,6 +77,12 @@ python3 main.py "https://youtu.be/XXXX" --mode qa --cookies-from-browser chrome
 # 文字起こし・解析を再利用（2回目以降は高速）
 python3 main.py --skip-dl --video "/path/to/video.mp4" \
   --transcript ./output_xxx/transcript.json --analysis ./output_xxx/analysis.json --mode qa
+
+# グループコンサル形式（講師が受講生を指名して対話する動画。指名〜次の指名で1クリップ）
+python3 main.py --skip-dl --video "/path/to/video.mp4" --mode group-consult --review
+
+# 動画全体を1本として扱う（区切り検出なし、タイトルだけAI生成）
+python3 main.py --skip-dl --video "/path/to/video.mp4" --mode whole
 ```
 
 ## 出力ファイル
@@ -97,8 +103,10 @@ python3 main.py --skip-dl --video "/path/to/video.mp4" \
 - 余白なしで、質問の話し始め〜回答の話し終わりちょうどで切り出す
 - `--mode qa` ではフィラー検出は行わない（プロンプト・出力トークンの無駄を避けるため）
 - Q&Aペアは自動検証される（順序整列・時間超過のクランプ・重複除外）。除外されたペアは実行ログに警告が出る
-- Whisper large-v3モデルのダウンロードは初回のみ（約3GB）
-- 15分動画の処理時間の実測目安：文字起こし約5分 + Claude解析1分以内 + 切り出し（5クリップ）約3分
+- Whisper large-v3-turboモデルのダウンロードは初回のみ（約1.6GB）
+- 処理時間の実測目安（このMacのCPU・large-v3-turbo・int8・vad_filter・全コア）：文字起こしは**動画の長さとほぼ同じ**（15分動画で約16分、10分動画で約10.5分）+ Claude解析1分以内 + 切り出し（クリップ数×数十秒）。旧設定（large-v3・vad_filterなし）では動画の長さの約2.3〜2.8倍かかっていた
+- **基本はturboで実行し、精度に問題（検出漏れ・誤字による境界ズレ等）が疑われる場合のみ `--model large-v3` に切り替えて再実行する**運用（2026-07-12決定）。turboはlarge-v3よりデコーダー層が少なく、OpenAI公表でもわずかな精度低下がある
+- 質問マーカーのクロスチェック（②事前チェック）と境界検査の冒頭/末尾マーカー判定（⑤事後検証B）は `qa`/`both` 専用。`group-consult`/`whole` では「◯つ目の質問」のような定型句が出ないため適用されない。この2モードでは**③事前レビューでの境界確認をより丁寧に行う**こと
 
 ## トラブルシューティング（詳細は [references/troubleshooting.md](references/troubleshooting.md)）
 
@@ -112,14 +120,15 @@ python3 main.py --skip-dl --video "/path/to/video.mp4" \
 | ドキュメントと挙動がズレる | 仕様変更時に片方だけ直す | `qa_report.md` の仕様準拠チェックが検出。両方同時に更新する |
 | qa_report.mdの境界検査が誤検知する | tinyモデルの精度が粗い | 切り分け方はtroubleshooting.md参照 |
 | 承認済みの警告で finalize.py がブロックされる | ⚠️が残っていると実行不可の仕様 | ユーザー承認を得た上で `finalize.py --force` |
+| グルコン動画で質問マーカー系の誤警告が出る | qa用チェックがグルコン形式に非対応だった（2026-07-12修正済み） | `--mode group-consult` を使う。旧版なら更新する |
 
 ## オプション一覧
 
 | オプション | デフォルト | 説明 |
 |---|---|---|
-| `--mode` | `both` | `filler` / `qa` / `both` |
+| `--mode` | `both` | `filler` / `qa` / `both` / `group-consult` / `whole`（後2つは注意事項参照） |
 | `--output` | `./output_{動画名}_{日付}` | 出力フォルダ |
-| `--model` | `large-v3` | Whisperモデル名 |
+| `--model` | `large-v3-turbo` | Whisperモデル名（速度優先。精度を上げたい場合は`large-v3`を指定） |
 | `--ai-model` | `claude-haiku-4-5-20251001` | Claude AIモデル |
 | `--skip-dl` | - | ダウンロードをスキップ |
 | `--video` | - | ローカル動画パス |

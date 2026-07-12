@@ -6,7 +6,12 @@
   python main.py <YouTube_URL> [options]
 
 オプション:
-  --mode        filler / qa / both  (default: both)
+  --mode        filler / qa / both / group-consult / whole  (default: both)
+                group-consult: 講師が受講生を指名し、指名〜対話〜次の指名までを
+                1セッションとして検出する（グループコンサル専用、qaモードとは
+                プロンプトが異なる。詳細はanalyzer.pyのGROUP_CONSULT_SECTION）
+                whole: 区切り検出をせず、動画全体を1セッションとして扱う
+                （呼び出し側が既に開始・終了を指定済みの場合用。AIはタイトルのみ生成）
   --output      出力ディレクトリ    (default: ./output_{動画名}_{日付})
   --model       Whisperモデル名     (default: large-v3)
   --skip-dl     ダウンロードをスキップ
@@ -75,9 +80,9 @@ def _write_qa_list(qa_pairs: list, words: list, output_dir: Path,
 def main() -> None:
     parser = argparse.ArgumentParser(description="動画編集自動化ツール")
     parser.add_argument("url", nargs="?", help="YouTube URL")
-    parser.add_argument("--mode", choices=["filler", "qa", "both"], default="both")
+    parser.add_argument("--mode", choices=["filler", "qa", "both", "group-consult", "whole"], default="both")
     parser.add_argument("--output", default=None)
-    parser.add_argument("--model", default="large-v3", help="Whisperモデル名")
+    parser.add_argument("--model", default="large-v3-turbo", help="Whisperモデル名")
     parser.add_argument("--ai-model", default="claude-haiku-4-5-20251001",
                         help="Claude AIモデル名 (default: claude-haiku-4-5-20251001)")
     parser.add_argument("--skip-dl", action="store_true")
@@ -157,27 +162,40 @@ def main() -> None:
         remove_fillers(video_path, fillers, out_filler)
         print(f"      完成: {out_filler}")
 
-    if args.mode in ("qa", "both"):
+    if args.mode in ("qa", "both", "group-consult", "whole"):
         duration = _get_duration(video_path)
-        qa_pairs = validate_qa_pairs(qa_pairs, duration)
-        qa_pairs = snap_answer_endings(qa_pairs, words, duration)
-        qa_pairs = refine_endings_by_silence(video_path, qa_pairs, duration)
-        print(f"      検証後のQ&Aペア: {len(qa_pairs)} 件")
+        cross_warnings: List[str] = []
 
-        # ── 事前チェック: 質問マーカーとのクロスチェック ──
-        markers = detect_question_markers(words)
-        cross_warnings = cross_check_qa_pairs(qa_pairs, markers)
-        if cross_warnings:
-            print(f"\n[事前チェック] ⚠️ {len(cross_warnings)} 件の警告:")
-            for w in cross_warnings:
-                print(f"      {w}")
-            if not args.force:
-                qa_list_path = _write_qa_list(qa_pairs, words, output_dir, warnings=cross_warnings)
-                sys.exit(
-                    f"\n検出漏れ・結合の疑いがあるため切り出しを中止しました。\n"
-                    f"{qa_list_path} を確認し、analysis.json を修正してから再実行してください。\n"
-                    f"（警告を無視して続行する場合は --force を指定）"
-                )
+        if args.mode == "whole":
+            # 区切り検出はしない。ユーザーが既に範囲を指定済みという前提で、
+            # 音声全体をそのまま1つのセッションとして扱う（タイトルだけAIに生成させる）。
+            title = analysis.get("title", "セッション")
+            qa_pairs = [{"q_start": 0.0, "a_end": duration, "title": title}]
+            print(f"      全体を1セッションとして扱います: 「{title}」（{duration:.0f}秒）")
+        else:
+            qa_pairs = validate_qa_pairs(qa_pairs, duration)
+            qa_pairs = snap_answer_endings(qa_pairs, words, duration)
+            qa_pairs = refine_endings_by_silence(video_path, qa_pairs, duration)
+            print(f"      検証後のQ&Aペア: {len(qa_pairs)} 件")
+
+            # ── 事前チェック: 質問マーカーとのクロスチェック ──
+            # 「◯つ目の質問」等の定型句前提のためqa/bothモード専用。
+            # group-consultは指名パターンが人名依存でルールベース検出が難しく、
+            # ③事前レビューでの人間確認に委ねる。
+            if args.mode in ("qa", "both"):
+                markers = detect_question_markers(words)
+                cross_warnings = cross_check_qa_pairs(qa_pairs, markers)
+                if cross_warnings:
+                    print(f"\n[事前チェック] ⚠️ {len(cross_warnings)} 件の警告:")
+                    for w in cross_warnings:
+                        print(f"      {w}")
+                    if not args.force:
+                        qa_list_path = _write_qa_list(qa_pairs, words, output_dir, warnings=cross_warnings)
+                        sys.exit(
+                            f"\n検出漏れ・結合の疑いがあるため切り出しを中止しました。\n"
+                            f"{qa_list_path} を確認し、analysis.json を修正してから再実行してください。\n"
+                            f"（警告を無視して続行する場合は --force を指定）"
+                        )
 
         if args.review:
             qa_list_path = _write_qa_list(qa_pairs, words, output_dir, warnings=cross_warnings)
@@ -193,7 +211,8 @@ def main() -> None:
 
         # ── 事後検証 ──
         print("\n[事後検証] クリップを検証中…")
-        report_path = verify_clips(video_path, clips, qa_pairs, words, str(output_dir), analysis=analysis)
+        report_path = verify_clips(video_path, clips, qa_pairs, words, str(output_dir),
+                                   analysis=analysis, mode=args.mode)
         print(f"      検証レポート: {report_path}")
         print(f'      承認後の最終配置は: python3 finalize.py --output "{output_dir}"')
 
