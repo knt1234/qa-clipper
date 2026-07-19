@@ -1,6 +1,22 @@
 ---
 name: qa-clipper
-description: YouTubeまたはローカルの動画から質疑応答（Q&A）を自動検出し、1問1答形式の切り抜きMP4を生成するスキル。faster-whisper（ローカル無料）で文字起こし、Claude Haiku APIでQ&A境界を検出、ffmpegで切り出す。
+description: |
+  YouTubeまたはローカルの動画から質疑応答（Q&A）を自動検出し、1問1答形式の
+  切り抜きMP4を生成するスキル。グループコンサル動画の指名単位の切り抜き
+  （--mode group-consult）、動画全体を1本扱いにしてタイトルだけAI生成する処理
+  （--mode whole）にも対応。文字起こしはfaster-whisper（ローカル無料）、
+  Q&A境界検出はClaude Haiku API、切り出しはffmpeg再エンコード方式。
+
+  Use this skill whenever the user mentions:
+  - Q&A切り抜き / 質疑応答を切り抜きたい / 1問1答に分けたい
+  - 質問会・勉強会・セミナー動画から質問ごとにクリップを作りたい
+  - グルコン（グループコンサル）の切り抜き / 受講生・指名ごとに動画を分けたい
+  - /qa-clipper command
+  - YouTube動画やローカル動画のQ&A部分だけ抜き出したい
+
+  Do NOT use for:
+  - フィラー除去だけが目的の場合（filler-clean を使う）
+  - 撮影素材（カメラMP4+マイクWAV）からの一気通貫編集（video-pipeline を使う）
 ---
 
 # Q&Aクリッパー
